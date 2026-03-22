@@ -1,0 +1,81 @@
+# 翡翠珠宝镶嵌托设计 AI辅助系统
+
+## 简介
+
+基于 Stable Diffusion + Xiaomi MiMo API 的本地珠宝设计AI辅助工具，纯本地运行，保护设计隐私。
+
+## 功能模块
+
+| 模块 | 功能 |
+|------|------|
+| 🎨 AI生图 | 文生图、图生图、Inpainting、ControlNet多条件控制 |
+| 🧠 模型训练 | LoRA微调、自动打标、训练可视化、MiMo辅助参数推荐 |
+| 🕷️ 素材爬虫 | 多平台图片爬取、AI关键词生成、智能去重筛选 |
+| 🔄 变体生成 | 材质/宝石/风格/细节/颜色变体批量生成 |
+| 💡 智能助手 | 文字转设计、草图转设计、客户需求分析、风格迁移 |
+| 🖼️ 设计图库 | SQLite数据库管理、搜索/收藏/评分/版本树 |
+| 📦 批量生产 | 参数矩阵组合批量生成，CSV报告导出 |
+
+## 环境要求
+
+- Python 3.10+
+- Stable Diffusion WebUI (A1111) 已启动并开放API
+- 推荐 GPU 8GB+ 显存
+
+## 安装
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 启动 SD WebUI（在另一个终端）
+cd stable-diffusion-webui
+./webui.sh --api    # Linux
+webui-user.bat       # Windows
+
+# 3. 启动本软件
+python main.py
+# 或双击 run.bat (Windows) / bash run.sh (Linux)
+```
+
+## 目录结构
+
+所有数据存储在 `F:\shengtu2`（Windows）或可在 `path_manager.py` 中修改：
+
+```
+F:\shengtu2\
+├── models\           # AI模型
+├── datasets\         # 训练素材
+├── outputs\          # 生成结果
+├── crawled\          # 爬取素材
+├── database\         # SQLite数据库
+├── config\           # 配置文件
+├── logs\             # 日志
+└── project\          # 项目代码
+    ├── main.py       # 入口
+    ├── core/         # 核心逻辑
+    ├── ui/           # 界面
+    └── utils/        # 工具
+```
+
+## 配置
+
+首次启动自动创建 `F:\shengtu2\config\settings.yaml`，可手动编辑或在软件设置界面修改。
+
+- **SD WebUI**: 默认 `http://127.0.0.1:7860`
+- **MiMo API**: 需在设置中填写 API Key
+
+## 快捷键
+
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+N | 新建设计 |
+| Ctrl+S | 保存 |
+| Ctrl+G | 开始生成 |
+| Ctrl+D | 复制提示词 |
+| Space  | 预览大图 |
+| Ctrl+Z | 撤销 |
+
+## 许可
+
+本项目仅供学习和研究使用。

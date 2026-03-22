@@ -1,0 +1,141 @@
+# -*- coding: utf-8 -*-
+"""
+参数面板组件 - 可复用的SD参数配置面板
+"""
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox, QPushButton
+)
+from PySide6.QtCore import Signal
+
+
+class ParamPanel(QWidget):
+    """通用SD生成参数面板"""
+
+    paramsChanged = Signal(dict)
+
+    def __init__(self, compact=False):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        # 采样器
+        sampler_group = QGroupBox("采样")
+        sampler_layout = QGridLayout(sampler_group)
+
+        sampler_layout.addWidget(QLabel("采样器:"), 0, 0)
+        self.sampler = QComboBox()
+        self.sampler.addItems([
+            "DPM++ 2M Karras", "DPM++ SDE Karras", "DPM++ 2M",
+            "Euler a", "Euler", "DDIM", "UniPC", "LMS", "Heun",
+            "DPM++ 2S a Karras", "DPM fast"
+        ])
+        sampler_layout.addWidget(self.sampler, 0, 1)
+
+        sampler_layout.addWidget(QLabel("步数:"), 1, 0)
+        self.steps = QSpinBox()
+        self.steps.setRange(1, 150)
+        self.steps.setValue(30)
+        self.steps.setToolTip("生成步数，越多越精细但越慢")
+        sampler_layout.addWidget(self.steps, 1, 1)
+
+        sampler_layout.addWidget(QLabel("CFG Scale:"), 2, 0)
+        self.cfg = QDoubleSpinBox()
+        self.cfg.setRange(1.0, 30.0)
+        self.cfg.setSingleStep(0.5)
+        self.cfg.setValue(7.0)
+        self.cfg.setToolTip("提示词引导强度，7-12为常用范围")
+        sampler_layout.addWidget(self.cfg, 2, 1)
+
+        layout.addWidget(sampler_group)
+
+        # 分辨率
+        res_group = QGroupBox("分辨率")
+        res_layout = QGridLayout(res_group)
+
+        res_layout.addWidget(QLabel("宽:"), 0, 0)
+        self.width = QSpinBox()
+        self.width.setRange(256, 2048)
+        self.width.setSingleStep(64)
+        self.width.setValue(512)
+        res_layout.addWidget(self.width, 0, 1)
+
+        res_layout.addWidget(QLabel("高:"), 0, 2)
+        self.height = QSpinBox()
+        self.height.setRange(256, 2048)
+        self.height.setSingleStep(64)
+        self.height.setValue(512)
+        res_layout.addWidget(self.height, 0, 3)
+
+        # 快捷分辨率按钮
+        if not compact:
+            quick_layout = QHBoxLayout()
+            for label, w, h in [("512²", 512, 512), ("768²", 768, 768),
+                                 ("1024²", 1024, 1024), ("512×768", 512, 768)]:
+                btn = QPushButton(label)
+                btn.setProperty("secondary", True)
+                btn.setMaximumHeight(24)
+                btn.clicked.connect(lambda checked, ww=w, hh=h: (
+                    self.width.setValue(ww), self.height.setValue(hh)
+                ))
+                quick_layout.addWidget(btn)
+            res_layout.addLayout(quick_layout, 1, 0, 1, 4)
+
+        layout.addWidget(res_group)
+
+        # 种子
+        seed_group = QGroupBox("种子")
+        seed_layout = QHBoxLayout(seed_group)
+
+        self.seed = QSpinBox()
+        self.seed.setRange(-1, 2**31 - 1)
+        self.seed.setValue(-1)
+        self.seed.setToolTip("-1 = 随机种子")
+        seed_layout.addWidget(self.seed)
+
+        rand_btn = QPushButton("🎲 随机")
+        rand_btn.setProperty("secondary", True)
+        rand_btn.setMaximumWidth(60)
+        rand_btn.setToolTip("设置随机种子 (-1)")
+        rand_btn.clicked.connect(lambda: self.seed.setValue(-1))
+        seed_layout.addWidget(rand_btn)
+
+        layout.addWidget(seed_group)
+
+        # 连接信号
+        for w in [self.sampler, self.steps, self.cfg, self.width, self.height, self.seed]:
+            if isinstance(w, QComboBox):
+                w.currentIndexChanged.connect(self._emit_changed)
+            else:
+                w.valueChanged.connect(self._emit_changed)
+
+    def _emit_changed(self):
+        self.paramsChanged.emit(self.get_params())
+
+    def get_params(self) -> dict:
+        return {
+            "sampler_name": self.sampler.currentText(),
+            "steps": self.steps.value(),
+            "cfg_scale": self.cfg.value(),
+            "width": self.width.value(),
+            "height": self.height.value(),
+            "seed": self.seed.value(),
+        }
+
+    def set_params(self, params: dict):
+        """从字典设置参数"""
+        if "sampler_name" in params:
+            idx = self.sampler.findText(params["sampler_name"])
+            if idx >= 0:
+                self.sampler.setCurrentIndex(idx)
+        if "steps" in params:
+            self.steps.setValue(params["steps"])
+        if "cfg_scale" in params:
+            self.cfg.setValue(params["cfg_scale"])
+        if "width" in params:
+            self.width.setValue(params["width"])
+        if "height" in params:
+            self.height.setValue(params["height"])
+        if "seed" in params:
+            self.seed.setValue(params["seed"])

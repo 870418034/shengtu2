@@ -1,0 +1,41 @@
+# -*- coding: utf-8 -*-
+"""
+主入口 - 翡翠珠宝镶嵌托设计AI辅助系统
+"""
+import sys
+import os
+
+# 确保项目根目录在 sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from PySide6.QtWidgets import QApplication
+from utils.path_manager import init_paths
+from utils.logger import logger
+
+
+def main():
+    """主函数"""
+    logger.info("=" * 50)
+    logger.info("翡翠珠宝镶嵌托设计AI辅助系统 启动中...")
+    logger.info("=" * 50)
+
+    # 初始化路径
+    init_paths()
+
+    # 创建应用
+    app = QApplication(sys.argv)
+    app.setApplicationName("翡翠珠宝镶嵌托设计AI辅助系统")
+    app.setApplicationVersion("1.0.0")
+
+    # 导入主窗口（在 QApplication 创建后导入，避免 Qt 初始化问题）
+    from ui.main_window import MainWindow
+
+    window = MainWindow()
+    window.show()
+
+    logger.info("主窗口已显示")
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

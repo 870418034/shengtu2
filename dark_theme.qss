@@ -1,0 +1,178 @@
+# -*- coding: utf-8 -*-
+"""
+配置管理器 - YAML配置文件读写，支持热更新
+"""
+import os
+import copy
+import yaml
+import threading
+from typing import Any, Optional
+
+from utils.path_manager import pm
+from utils.logger import logger
+
+
+DEFAULT_SETTINGS = {
+    "app": {
+        "name": "翡翠珠宝镶嵌托设计AI辅助系统",
+        "version": "1.0.0",
+        "theme": "dark",  # dark / light
+        "language": "zh_CN",
+    },
+    "sd_webui": {
+        "api_url": "http://127.0.0.1:7860",
+        "api_mode": "a1111",  # a1111 / comfyui
+        "timeout": 120,
+        "default_sampler": "DPM++ 2M Karras",
+        "default_steps": 30,
+        "default_cfg_scale": 7.0,
+        "default_width": 512,
+        "default_height": 512,
+        "default_batch_size": 1,
+        "hires_fix_enabled": False,
+        "hires_fix_upscaler": "4x-UltraSharp",
+        "hires_fix_scale": 2.0,
+        "adetailer_enabled": False,
+    },
+    "mimo_api": {
+        "api_key": "",
+        "base_url": "https://api.xiaomi.com/mimo/v1",
+        "model": "xiaomi/mimo-v1",
+        "timeout": 60,
+        "max_retries": 3,
+    },
+    "training": {
+        "default_network_type": "LoRA",
+        "default_rank": 32,
+        "default_learning_rate_unet": 1e-4,
+        "default_learning_rate_te": 5e-5,
+        "default_epochs": 10,
+        "default_batch_size": 1,
+        "default_resolution": 512,
+        "default_optimizer": "AdamW8bit",
+        "default_mixed_precision": "fp16",
+        "save_format": "safetensors",
+        "save_every_n_steps": 500,
+        "preview_every_n_steps": 100,
+        "kohya_ss_path": "",  # kohya_ss安装路径
+    },
+    "crawler": {
+        "concurrent_requests": 3,
+        "request_interval_min": 2.0,
+        "request_interval_max": 5.0,
+        "min_resolution_width": 800,
+        "min_resolution_height": 600,
+        "similarity_threshold": 60,
+        "max_images_per_site": 100,
+        "proxy_enabled": False,
+        "proxy_type": "http",  # http / socks5
+        "proxy_url": "",
+        "user_agent_rotation": True,
+    },
+    "gallery": {
+        "thumbnail_size": 256,
+        "default_sort": "time_desc",
+    },
+    "batch": {
+        "max_concurrent": 4,
+    },
+}
+
+
+class ConfigManager:
+    """配置管理单例"""
+
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if not hasattr(self, "_initialized"):
+            self._config_path = pm.config_path()
+            self._data = {}
+            self._file_lock = threading.Lock()
+            self._load()
+            self._initialized = True
+
+    def _load(self):
+        """加载配置文件"""
+        try:
+            if os.path.exists(self._config_path):
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    self._data = yaml.safe_load(f) or {}
+                logger.info(f"已加载配置文件: {self._config_path}")
+            else:
+                self._data = copy.deepcopy(DEFAULT_SETTINGS)
+                self._save()
+                logger.info("已创建默认配置文件")
+        except Exception as e:
+            logger.error(f"加载配置文件失败: {e}")
+            self._data = copy.deepcopy(DEFAULT_SETTINGS)
+
+        # 确保所有默认值存在
+        self._merge_defaults(self._data, DEFAULT_SETTINGS)
+
+    def _merge_defaults(self, data: dict, defaults: dict):
+        """合并默认值（不覆盖已有值）"""
+        for key, value in defaults.items():
+            if key not in data:
+                data[key] = copy.deepcopy(value)
+            elif isinstance(value, dict) and isinstance(data[key], dict):
+                self._merge_defaults(data[key], value)
+
+    def _save(self):
+        """保存配置文件"""
+        os.makedirs(os.path.dirname(self._config_path), exist_ok=True)
+        with self._file_lock:
+            with open(self._config_path, "w", encoding="utf-8") as f:
+                yaml.dump(self._data, f, default_flow_style=False,
+                          allow_unicode=True, sort_keys=False)
+
+    def get(self, *keys, default=None) -> Any:
+        """获取配置值，支持多级键"""
+        result = self._data
+        for key in keys:
+            if isinstance(result, dict) and key in result:
+                result = result[key]
+            else:
+                return default
+        return result
+
+    def set(self, *args):
+        """
+        设置配置值
+        用法: config.set("sd_webui", "api_url", "http://...")
+        最后一个参数是值，前面的是键路径
+        """
+        if len(args) < 2:
+            raise ValueError("至少需要一个键和一个值")
+        keys = args[:-1]
+        value = args[-1]
+
+        target = self._data
+        for key in keys[:-1]:
+            if key not in target or not isinstance(target[key], dict):
+                target[key] = {}
+            target = target[key]
+        target[keys[-1]] = value
+        self._save()
+
+    def reload(self):
+        """重新加载配置（热更新）"""
+        self._load()
+        logger.info("配置已重新加载")
+
+    @property
+    def data(self) -> dict:
+        """返回配置的深拷贝"""
+        return copy.deepcopy(self._data)
+
+
+# 全局实例
+config = ConfigManager()

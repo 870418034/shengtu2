@@ -1,0 +1,264 @@
+# -*- coding: utf-8 -*-
+"""
+Xiaomi MiMo API客户端 - 使用openai库兼容调用
+"""
+import os
+import time
+import json
+import hashlib
+import base64
+from typing import Optional, Dict, Any, List
+from pathlib import Path
+
+from openai import OpenAI
+
+from core.config_manager import config
+from core.database import db
+from utils.logger import logger
+
+
+class MimoApiClient:
+    """MiMo API客户端"""
+
+    def __init__(self):
+        self._client = None
+        self._cache = {}
+
+    def _get_client(self) -> OpenAI:
+        """获取OpenAI兼容客户端"""
+        if self._client is None:
+            api_key = config.get("mimo_api", "api_key", default="")
+            base_url = config.get("mimo_api", "base_url", default="https://api.xiaomi.com/mimo/v1")
+            if not api_key:
+                raise ValueError("MiMo API Key未配置，请在设置中填写")
+            self._client = OpenAI(api_key=api_key, base_url=base_url)
+        return self._client
+
+    def _hash_input(self, data: Any) -> str:
+        """计算输入的哈希值（用于缓存）"""
+        content = json.dumps(data, sort_keys=True, ensure_ascii=False)
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def _log_call(self, func_name: str, input_data: Any, response: str,
+                  tokens: int, duration_ms: int, success: bool, error: str = ""):
+        """记录API调用日志"""
+        try:
+            input_preview = str(input_data)[:200] if input_data else ""
+            response_preview = str(response)[:200] if response else ""
+            db.insert_mimo_log({
+                "function_name": func_name,
+                "input_hash": self._hash_input(input_data),
+                "input_preview": input_preview,
+                "response_preview": response_preview,
+                "tokens_used": tokens,
+                "duration_ms": duration_ms,
+                "success": 1 if success else 0,
+                "error_message": error,
+            })
+        except Exception as e:
+            logger.error(f"记录MiMo API日志失败: {e}")
+
+    def chat_completion(self, messages: List[Dict], model: str = None,
+                        temperature: float = 0.7, max_tokens: int = 2048) -> str:
+        """
+        发送聊天请求
+        messages: [{"role": "user/system/assistant", "content": "..."}]
+        """
+        model = model or config.get("mimo_api", "model", default="xiaomi/mimo-v1")
+        timeout = config.get("mimo_api", "timeout", default=60)
+        max_retries = config.get("mimo_api", "max_retries", default=3)
+
+        # 检查缓存
+        cache_key = self._hash_input({"messages": messages, "model": model})
+        if cache_key in self._cache:
+            logger.debug("MiMo API缓存命中")
+            return self._cache[cache_key]
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                start_time = time.time()
+                client = self._get_client()
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                )
+                content = response.choices[0].message.content
+                tokens = response.usage.total_tokens if response.usage else 0
+                duration_ms = int((time.time() - start_time) * 1000)
+
+                # 缓存结果
+                self._cache[cache_key] = content
+
+                self._log_call("chat_completion", messages, content, tokens, duration_ms, True)
+                return content
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"MiMo API调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # 指数退避
+
+        self._log_call("chat_completion", messages, "", 0, 0, False, str(last_error))
+        raise RuntimeError(f"MiMo API调用失败，已重试{max_retries}次: {last_error}")
+
+    def vision_completion(self, image_path: str, prompt: str, model: str = None) -> str:
+        """多模态请求（图片+文字）"""
+        model = model or config.get("mimo_api", "model", default="xiaomi/mimo-v1")
+
+        # 读取图片并转base64
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode()
+
+        ext = Path(image_path).suffix.lower()
+        mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                    ".webp": "image/webp", ".gif": "image/gif"}
+        mime = mime_map.get(ext, "image/jpeg")
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}
+            ]
+        }]
+
+        return self.chat_completion(messages, model=model)
+
+    def enhance_description(self, image_path: str) -> str:
+        """批量图片描述增强 - 生成珠宝专业描述"""
+        prompt = (
+            "你是一位专业的珠宝设计描述专家。请详细描述这张珠宝图片，使用专业的英文术语。"
+            "包括：镶嵌工艺类型、金属材质、宝石种类/品质/切工/尺寸、设计风格、"
+            "整体造型特点。描述应适合作为Stable Diffusion训练标签使用。"
+            "请用逗号分隔的标签格式输出。"
+        )
+        return self.vision_completion(image_path, prompt)
+
+    def optimize_tags(self, basic_tags: str) -> str:
+        """自动标签优化 - 用珠宝专业术语重写"""
+        prompt = (
+            "你是一位珠宝鉴定和设计专家。以下是一张珠宝图片的基础标签，"
+            "请用更专业、更精确的珠宝术语重写这些标签。\n\n"
+            f"基础标签：{basic_tags}\n\n"
+            "要求：\n"
+            "1. 使用专业的珠宝行业术语\n"
+            "2. 添加镶嵌工艺、金属材质、宝石品质等专业细节\n"
+            "3. 用逗号分隔的标签格式\n"
+            "4. 保持英文输出"
+        )
+        return self.chat_completion([{"role": "user", "content": prompt}])
+
+    def generate_trigger_words(self, descriptions: List[str]) -> Dict[str, Any]:
+        """训练触发词生成"""
+        desc_text = "\n".join(descriptions[:20])  # 限制长度
+        prompt = (
+            "你是一位LoRA训练专家。以下是训练数据集中图片的描述，"
+            "请分析这些描述的共同特征，生成3-5个最佳触发词(Trigger Word)，"
+            "并附带推荐的使用提示词模板。\n\n"
+            f"训练集描述：\n{desc_text}\n\n"
+            "请以JSON格式返回：\n"
+            '{"trigger_words": ["word1", "word2"], "prompt_template": "...", "notes": "..."}'
+        )
+        response = self.chat_completion([{"role": "user", "content": prompt}])
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return {"trigger_words": [], "prompt_template": response, "notes": ""}
+
+    def suggest_training_params(self, dataset_info: Dict) -> Dict[str, Any]:
+        """训练策略建议"""
+        prompt = (
+            "你是一位LoRA微调训练专家。请根据以下训练数据集信息，"
+            "推荐最佳的训练参数配置。\n\n"
+            f"数据集信息：\n{json.dumps(dataset_info, ensure_ascii=False, indent=2)}\n\n"
+            "请以JSON格式返回推荐参数：\n"
+            '{"rank": 32, "learning_rate_unet": "1e-4", "learning_rate_te": "5e-5", '
+            '"epochs": 10, "batch_size": 1, "optimizer": "AdamW8bit", "notes": "..."}'
+        )
+        response = self.chat_completion([{"role": "user", "content": prompt}])
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return {}
+
+    def generate_negative_tags(self, descriptions: List[str]) -> str:
+        """负标签生成"""
+        desc_text = "\n".join(descriptions[:20])
+        prompt = (
+            "你是一位LoRA训练专家。根据以下训练集描述，"
+            "生成应该排除的负向标签列表，避免训练出的模型产生不需要的特征。\n\n"
+            f"训练集描述：\n{desc_text}\n\n"
+            "请输出逗号分隔的负向标签列表（英文）。"
+        )
+        return self.chat_completion([{"role": "user", "content": prompt}])
+
+    def suggest_data_augmentation(self, descriptions: List[str]) -> str:
+        """数据增强建议"""
+        desc_text = "\n".join(descriptions[:20])
+        prompt = (
+            "你是一位珠宝摄影和LoRA训练专家。分析以下训练集描述，"
+            "指出缺失的角度、风格、材质组合，并建议补充哪些类型的素材以提升模型效果。\n\n"
+            f"训练集描述：\n{desc_text}"
+        )
+        return self.chat_completion([{"role": "user", "content": prompt}])
+
+    def generate_design_description(self, concept: str) -> str:
+        """设计描述生成 - 中文概念转英文专业提示词"""
+        prompt = (
+            "你是一位珠宝设计专家和AI提示词工程师。"
+            "请将以下中文珠宝设计概念转化为完整的、专业的Stable Diffusion英文提示词。\n\n"
+            f"设计概念：{concept}\n\n"
+            "要求：\n"
+            "1. 包含详细的镶嵌工艺、金属材质、宝石描述\n"
+            "2. 包含光影、拍摄角度、背景等摄影要素\n"
+            "3. 包含风格关键词\n"
+            "4. 直接输出可直接用于SD的英文提示词，不需要额外说明"
+        )
+        return self.chat_completion([{"role": "user", "content": prompt}])
+
+    def search_keywords_from_image(self, image_path: str) -> Dict[str, List[str]]:
+        """从图片提取中英文搜索关键词"""
+        prompt = (
+            "分析这张珠宝图片，生成用于在网上搜索相似设计的关键词。\n"
+            "请以JSON格式返回：\n"
+            '{"cn_keywords": ["关键词1", "关键词2"], '
+            '"en_keywords": ["keyword1", "keyword2"], '
+            '"pinyin_keywords": ["pinyin1", "pinyin2"]}'
+        )
+        response = self.vision_completion(image_path, prompt)
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return {"cn_keywords": [], "en_keywords": [], "pinyin_keywords": []}
+
+    def analyze_customer_need(self, need: str) -> List[Dict]:
+        """客户需求分析 -> 多个设计方案"""
+        prompt = (
+            "你是一位珠宝设计师。请根据以下客户需求，生成3-5个设计方案。\n\n"
+            f"客户需求：{need}\n\n"
+            "请以JSON数组格式返回：\n"
+            '[{"name": "方案名称", "description": "中文设计描述", '
+            '"sd_prompt": "英文SD提示词", "budget_range": "预算建议"}]'
+        )
+        response = self.chat_completion([{"role": "user", "content": prompt}])
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return [{"name": "方案", "description": response, "sd_prompt": need}]
+
+    def get_usage_stats(self) -> Dict[str, Any]:
+        """获取使用统计"""
+        return db.get_mimo_stats()
+
+    def clear_cache(self):
+        """清除缓存"""
+        self._cache.clear()
+        logger.info("MiMo API缓存已清除")
+
+
+# 全局实例
+mimo_api = MimoApiClient()
